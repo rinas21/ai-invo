@@ -11,7 +11,11 @@
   let editorContent = '';
   let editorRef = null;
 
+  let extractedFields = null;
+  let structuredData = null;
+
   let loading = false;
+  let regenerating = false;
   let generateError = '';
   let exportError = '';
   let successNotice = '';
@@ -103,6 +107,8 @@
     invoiceSize = '';
     memoHtml = '';
     editorContent = '';
+    extractedFields = null;
+    structuredData = null;
     generateError = '';
     exportError = '';
     successNotice = '';
@@ -139,18 +145,45 @@
 
       memoHtml = data.html || '';
       editorContent = memoHtml;
+      extractedFields = data.fields || null;
+      structuredData = data.structuredData || null;
+
       if (editorRef) {
         editorRef.innerHTML = memoHtml;
       }
-      if (data.warning) {
-        successNotice = `Memo generated. (${data.warning})`;
-      } else {
-        successNotice = 'Payment approval memo generated successfully. You can edit any field below.';
-      }
+
+      successNotice = 'Payment approval memo generated. You can review extracted values or edit the memo directly.';
     } catch (err) {
       generateError = err.message || 'Generation failed. Please try again.';
     } finally {
       loading = false;
+    }
+  }
+
+  async function regenerateFromFields() {
+    if (!extractedFields) return;
+    regenerating = true;
+    generateError = '';
+    exportError = '';
+    try {
+      const res = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fields: extractedFields }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update memo.');
+
+      memoHtml = data.html || '';
+      editorContent = memoHtml;
+      if (editorRef) {
+        editorRef.innerHTML = memoHtml;
+      }
+      successNotice = 'Memo regenerated with your updated fields.';
+    } catch (err) {
+      generateError = err.message || 'Update failed.';
+    } finally {
+      regenerating = false;
     }
   }
 
@@ -397,7 +430,7 @@
         >
           {#if loading}
             <span class="spinner" aria-hidden="true"></span>
-            <span>Processing Invoice with Gemini...</span>
+            <span>Extracting Invoice &amp; Generating Memo...</span>
           {:else}
             <svg class="btn-icon" viewBox="0 0 20 20" fill="currentColor">
               <path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd" />
@@ -419,6 +452,79 @@
         {/if}
       </div>
     </section>
+
+    <!-- Extraction Review Step Panel (Section 7) -->
+    {#if extractedFields}
+      <section class="card review-card" id="extraction-review-panel">
+        <div class="review-header">
+          <div>
+            <h2 class="review-title">Extraction Review</h2>
+            <p class="review-subtitle">
+              Verify the extracted values below. Correct any field and click <b>Update &amp; Regenerate</b> to refresh the memo.
+            </p>
+          </div>
+          <div class="review-badges">
+            {#if structuredData?.arithmeticValid === true}
+              <span class="badge badge-success">✓ Arithmetic Verified: {structuredData.quantity} &times; {structuredData.unitPrice} = {structuredData.totalAmount}</span>
+            {:else if structuredData?.discrepancy}
+              <span class="badge badge-warning">⚠ {structuredData.discrepancy}</span>
+            {/if}
+            {#if structuredData?.currency}
+              <span class="badge badge-neutral">Currency: {structuredData.currency}</span>
+            {/if}
+          </div>
+        </div>
+
+        <div class="review-grid">
+          <div class="field-item">
+            <label for="f-date" class="review-label">Invoice Date</label>
+            <input id="f-date" type="text" class="review-input" bind:value={extractedFields.invoiceDate} />
+          </div>
+
+          <div class="field-item">
+            <label for="f-invno" class="review-label">Invoice / Ref No</label>
+            <input id="f-invno" type="text" class="review-input" bind:value={extractedFields.invoiceNo} />
+          </div>
+
+          <div class="field-item">
+            <label for="f-supplier" class="review-label">Supplier Name</label>
+            <input id="f-supplier" type="text" class="review-input" bind:value={extractedFields.supplierName} />
+          </div>
+
+          <div class="field-item">
+            <label for="f-amount" class="review-label">Total Amount</label>
+            <input id="f-amount" type="text" class="review-input" bind:value={extractedFields.amount} />
+          </div>
+
+          <div class="field-item full-width">
+            <label for="f-purpose" class="review-label">Payment Purpose</label>
+            <input id="f-purpose" type="text" class="review-input" bind:value={extractedFields.paymentPurpose} />
+          </div>
+
+          <div class="field-item full-width">
+            <label for="f-desc" class="review-label">Description / Fee Service</label>
+            <input id="f-desc" type="text" class="review-input" bind:value={extractedFields.description} />
+          </div>
+        </div>
+
+        <div class="review-footer">
+          <button
+            type="button"
+            class="btn btn-secondary btn-sm"
+            on:click={regenerateFromFields}
+            disabled={regenerating}
+            id="regenerate-memo-button"
+          >
+            {#if regenerating}
+              <span class="spinner" aria-hidden="true"></span>
+              <span>Updating Memo...</span>
+            {:else}
+              <span>Update &amp; Regenerate Memo</span>
+            {/if}
+          </button>
+        </div>
+      </section>
+    {/if}
 
     <!-- Memo Editor & Preview Section -->
     {#if memoHtml || editorContent}
@@ -801,6 +907,121 @@
     flex-wrap: wrap;
   }
 
+  /* Extraction Review Panel (Section 7) */
+  .review-card {
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-strong);
+  }
+
+  .review-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+
+  .review-title {
+    margin: 0;
+    font-size: 1.0625rem;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+
+  .review-subtitle {
+    margin: 4px 0 0;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+  }
+
+  .review-badges {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .badge {
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: var(--radius-sm);
+  }
+
+  .badge-success {
+    background-color: var(--success-bg);
+    color: var(--success);
+    border: 1px solid var(--success-border);
+  }
+
+  .badge-warning {
+    background-color: #fffbeb;
+    color: #b45309;
+    border: 1px solid #fde68a;
+  }
+
+  .badge-neutral {
+    background-color: var(--bg-subtle);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+  }
+
+  .review-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 14px;
+  }
+
+  .field-item {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .field-item.full-width {
+    grid-column: span 2;
+  }
+
+  .review-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .review-input {
+    width: 100%;
+    padding: 7px 10px;
+    font-size: 0.875rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    background-color: var(--bg-page);
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .review-input:focus {
+    border-color: var(--primary);
+    background-color: #ffffff;
+    box-shadow: 0 0 0 2px var(--primary-focus);
+  }
+
+  .review-footer {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-color);
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .btn-sm {
+    padding: 7px 14px;
+    font-size: 0.8125rem;
+  }
+
   /* Buttons */
   .btn {
     display: inline-flex;
@@ -1082,6 +1303,14 @@
 
     .action-bar .btn {
       width: 100%;
+    }
+
+    .review-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .field-item.full-width {
+      grid-column: span 1;
     }
   }
 </style>
