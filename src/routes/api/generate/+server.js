@@ -1,8 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { validateSession } from '$lib/server/auth';
-import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
 import pdfParse from 'pdf-parse';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import {
@@ -10,6 +8,7 @@ import {
   mapDataToTemplatePlaceholders,
   normalizePdfText,
 } from '$lib/server/invoiceParser.js';
+import templateHtml from '$lib/server/payment_approval_template.html?raw';
 
 const COOKIE_NAME = 'invomemo_session';
 const MAX_PDF_SIZE = 15 * 1024 * 1024; // 15 MB
@@ -19,23 +18,7 @@ function getApiKey() {
 }
 
 function getTemplate() {
-  const candidatePaths = [
-    join(process.cwd(), 'hr', 'payment_approval_template.html'),
-    join(process.cwd(), 'payment_approval_template.html'),
-    join(process.cwd(), 'src', 'lib', 'server', 'payment_approval_template.html'),
-  ];
-
-  for (const path of candidatePaths) {
-    if (existsSync(path)) {
-      try {
-        return readFileSync(path, 'utf8');
-      } catch {
-        // try next path
-      }
-    }
-  }
-
-  throw new Error('Payment approval template not found in hr/ or project root.');
+  return templateHtml;
 }
 
 function authenticate(cookies) {
