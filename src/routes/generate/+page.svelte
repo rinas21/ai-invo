@@ -142,7 +142,11 @@
       if (editorRef) {
         editorRef.innerHTML = memoHtml;
       }
-      successNotice = 'Payment approval memo generated successfully. You can edit any field below.';
+      if (data.warning) {
+        successNotice = `Memo generated. (${data.warning})`;
+      } else {
+        successNotice = 'Payment approval memo generated successfully. You can edit any field below.';
+      }
     } catch (err) {
       generateError = err.message || 'Generation failed. Please try again.';
     } finally {

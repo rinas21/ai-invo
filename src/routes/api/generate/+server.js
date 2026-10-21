@@ -7,7 +7,6 @@ import pdfParse from 'pdf-parse';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const COOKIE_NAME = 'invomemo_session';
-const MODEL_NAME = 'gemini-1.5-flash';
 const MAX_PDF_SIZE = 15 * 1024 * 1024; // 15 MB
 
 function getApiKey() {
@@ -88,6 +87,86 @@ function populateTemplate(template, fields) {
   return html;
 }
 
+// Fallback extractor when Gemini API returns 403 Forbidden / Project Denied
+function extractFieldsFromText(text) {
+  const fields = {
+    date: null,
+    paymentPurpose: null,
+    supplierName: null,
+    feeService: null,
+    employeeName: null,
+    programmeEvent: null,
+    invoiceDate: null,
+    description: null,
+    invoiceNo: null,
+    amount: null,
+    preparedBy: null,
+    approvedBy: null,
+  };
+
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+
+  // Supplier
+  const supplierMatch = text.match(/(?:Supplier|Vendor|Payee|Biller|From)[:\s]+([^\n\r]+)/i);
+  if (supplierMatch) {
+    fields.supplierName = supplierMatch[1].trim();
+  } else if (lines.length > 0) {
+    // If first line is "TAX INVOICE", second line is often supplier
+    const nonTitleLines = lines.filter((l) => !/invoice|tax invoice|receipt|bill/i.test(l));
+    if (nonTitleLines[0]) fields.supplierName = nonTitleLines[0];
+  }
+
+  // Invoice No
+  const invNoMatch = text.match(/(?:Invoice\s*(?:No|Number|#)|Inv\s*#?)[:\s]+([A-Za-z0-9\-_/]+)/i);
+  if (invNoMatch) fields.invoiceNo = invNoMatch[1].trim();
+
+  // Date
+  const dateMatch = text.match(/(?:Invoice\s*Date|Date)[:\s]+([0-9]{1,2}[\s\/\-](?:[A-Za-z]+|[0-9]{1,2})[\s\/\-][0-9]{2,4})/i);
+  if (dateMatch) {
+    fields.invoiceDate = dateMatch[1].trim();
+    fields.date = dateMatch[1].trim();
+  }
+
+  // Employee
+  const empMatch = text.match(/(?:Employee|Participant|Attendee|Delegate|Student)[:\s]+([^\n\r]+)/i);
+  if (empMatch) fields.employeeName = empMatch[1].trim();
+
+  // Programme / Event
+  const progMatch = text.match(/(?:Programme\s*\/\s*Event|Program|Event|Course)[:\s]+([^\n\r]+)/i);
+  if (progMatch) {
+    fields.programmeEvent = progMatch[1].trim();
+    fields.paymentPurpose = progMatch[1].trim().toUpperCase();
+  }
+
+  // Amount
+  const amountMatch = text.match(/(?:Total\s*Due|Total\s*Amount|Grand\s*Total|Total|Amount)[:\s]*([$€£A-Z]{0,3}\s*[0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?)/i);
+  if (amountMatch) {
+    const rawAmt = amountMatch[1].replace(/[$€£A-Z\s]/g, '').trim();
+    if (rawAmt) fields.amount = rawAmt;
+  }
+
+  // Description
+  const descMatch = text.match(/(?:Description|Particulars)[:\s]*([^\n\r]+)/i);
+  if (descMatch) {
+    fields.description = descMatch[1].trim();
+    fields.feeService = descMatch[1].trim();
+  } else if (lines.length > 4) {
+    const descCandidate = lines.find((l) =>
+      /fee|workshop|registration|training|consulting|service|subscription|intake/i.test(l) &&
+      !/^(tax invoice|invoice no|invoice date|supplier|total)/i.test(l)
+    );
+    if (descCandidate) {
+      fields.description = descCandidate;
+      fields.feeService = descCandidate;
+      if (!fields.paymentPurpose) {
+        fields.paymentPurpose = descCandidate.toUpperCase();
+      }
+    }
+  }
+
+  return fields;
+}
+
 export async function POST({ request, cookies }) {
   authenticate(cookies);
 
@@ -142,13 +221,18 @@ export async function POST({ request, cookies }) {
     template = getTemplate();
   } catch (err) {
     console.error('Template loading error:', err);
-    return json({ error: 'Failed to load the payment approval template.' }, { status: 500 });
+    return json({ error: 'Failed to load the payment approval template from hr/payment_approval_template.html.' }, { status: 500 });
   }
 
-  // Request extraction from Gemini API
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: MODEL_NAME });
+  // Preferred models: user configured or gemini-flash-latest
+  const modelCandidates = [
+    env.GEMINI_MODEL || process.env.GEMINI_MODEL,
+    'gemini-flash-latest',
+    'gemini-2.5-flash',
+    'gemini-3.8-flash',
+  ].filter(Boolean);
 
+  const genAI = new GoogleGenerativeAI(apiKey);
   const prompt = `
 You are a meticulous enterprise document-processing system. Your ONLY task is to extract payment memo values from the provided INVOICE TEXT into structured JSON.
 
@@ -195,21 +279,42 @@ STRICT CONSTRAINTS:
 }
 `;
 
-  let fields = {};
-  try {
-    const result = await model.generateContent(prompt);
-    const raw = result.response.text() || '';
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error('Gemini response did not contain JSON.');
+  let fields = null;
+  let geminiError = null;
+
+  for (const modelName of modelCandidates) {
+    try {
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent(prompt);
+      const raw = result.response.text() || '';
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        fields = JSON.parse(jsonMatch[0]);
+        break;
+      }
+    } catch (err) {
+      geminiError = err;
+      // If 404, try next model candidate
+      if (err.status === 404) {
+        continue;
+      }
+      // If 403 or other permission issue, break and use text fallback
+      break;
     }
-    fields = JSON.parse(jsonMatch[0]);
-  } catch (err) {
-    console.error('Gemini extraction error:', err);
-    return json({ error: 'Failed to extract memo details with Gemini API: ' + (err.message || 'Unknown error') }, { status: 500 });
+  }
+
+  // If Gemini failed due to 403 project access denied or 404, fall back to parsing text from the PDF
+  if (!fields) {
+    console.warn('Gemini extraction unavailable:', geminiError?.message);
+    fields = extractFieldsFromText(invoiceText);
   }
 
   const memoHtml = populateTemplate(template, fields);
 
-  return json({ ok: true, html: memoHtml, fields });
+  return json({
+    ok: true,
+    html: memoHtml,
+    fields,
+    warning: geminiError ? `Note: AI service response: ${geminiError.message || 'Access issue'}. Memo was populated using document text extraction.` : undefined,
+  });
 }
