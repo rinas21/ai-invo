@@ -1,0 +1,26 @@
+{
+  "name": "invoice-to-memo",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "@sveltejs/adapter-vercel": "^5.10.3",
+    "cookie": "^0.7.2",
+    "docx": "^8.4.0",
+    "pdf-parse": "^1.1.1",
+    "pdfmake": "^0.2.10"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-auto": "^3.3.1",
+    "@sveltejs/kit": "2.5.28",
+    "@sveltejs/vite-plugin-svelte": "3.1.2",
+    "svelte": "4.2.20",
+    "vite": "5.4.21"
+  },
+  "type": "module"
+}
