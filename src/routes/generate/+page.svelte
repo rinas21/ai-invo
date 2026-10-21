@@ -5,332 +5,1079 @@
   let invoiceFile = null;
   let invoiceName = '';
   let invoiceSize = '';
+  let isDragOver = false;
+
   let memoHtml = '';
+  let editorContent = '';
+  let editorRef = null;
+
   let loading = false;
   let generateError = '';
   let exportError = '';
-  let success = '';
-  let editorContent = '';
+  let successNotice = '';
+  let copyFeedback = '';
 
-  let editorRef;
-
-  async function checkAuth() {
+  onMount(async () => {
     try {
       const res = await fetch('/api/auth/verify');
       const data = await res.json();
-      if (!data.authenticated) await goto('/login');
+      if (!data || !data.authenticated) {
+        await goto('/');
+      }
     } catch {
-      await goto('/login');
+      await goto('/');
+    }
+  });
+
+  async function handleLogout() {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch {
+      // ignore
+    } finally {
+      await goto('/');
     }
   }
 
-  onMount(checkAuth);
-
   function formatSize(bytes) {
-    if (!bytes) return '';
+    if (!bytes && bytes !== 0) return '';
     if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
     return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
   }
 
-  function handleFileChange(e) {
-    const file = e.target.files[0];
+  function setFile(file) {
     if (!file) return;
-    if (file.type !== 'application/pdf') {
-      generateError = 'Please upload a PDF file.';
+
+    generateError = '';
+    exportError = '';
+    successNotice = '';
+
+    const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    if (!isPdf) {
+      generateError = 'Invalid file type. Only PDF documents are supported.';
       return;
     }
+
     const MAX_SIZE = 15 * 1024 * 1024; // 15 MB
     if (file.size > MAX_SIZE) {
-      generateError = 'File too large. Maximum 15 MB.';
+      generateError = 'File exceeds 15 MB limit. Please select a smaller PDF.';
       return;
     }
+
+    if (file.size === 0) {
+      generateError = 'The selected file is empty.';
+      return;
+    }
+
     invoiceFile = file;
     invoiceName = file.name;
     invoiceSize = formatSize(file.size);
-    generateError = '';
-    memoHtml = '';
-    editorContent = '';
   }
 
-  function removeFile() {
+  function handleFileInputChange(e) {
+    const file = e.target.files && e.target.files[0];
+    if (file) setFile(file);
+  }
+
+  function handleDragOver(e) {
+    e.preventDefault();
+    isDragOver = true;
+  }
+
+  function handleDragLeave(e) {
+    e.preventDefault();
+    isDragOver = false;
+  }
+
+  function handleDrop(e) {
+    e.preventDefault();
+    isDragOver = false;
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) setFile(file);
+  }
+
+  function startOver() {
     invoiceFile = null;
     invoiceName = '';
     invoiceSize = '';
     memoHtml = '';
     editorContent = '';
     generateError = '';
-    document.getElementById('invoice-input').value = '';
+    exportError = '';
+    successNotice = '';
+    copyFeedback = '';
+    const input = document.getElementById('invoice-file-input');
+    if (input) input.value = '';
   }
 
   async function generateMemo() {
     if (!invoiceFile) {
-      generateError = 'Please upload an invoice PDF first.';
+      generateError = 'Please upload an invoice PDF before generating.';
       return;
     }
+
     loading = true;
     generateError = '';
-    success = '';
-    memoHtml = '';
-    editorContent = '';
+    exportError = '';
+    successNotice = '';
 
     const formData = new FormData();
     formData.append('invoice', invoiceFile);
 
     try {
-      const res = await fetch('/api/generate', { method: 'POST', body: formData });
+      const res = await fetch('/api/generate', {
+        method: 'POST',
+        body: formData,
+      });
+
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to generate memo.');
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to generate memo.');
+      }
+
       memoHtml = data.html || '';
       editorContent = memoHtml;
-      if (editorRef) editorRef.innerHTML = memoHtml;
-      success = 'Memo generated. Review and edit before exporting.';
+      if (editorRef) {
+        editorRef.innerHTML = memoHtml;
+      }
+      successNotice = 'Payment approval memo generated successfully. You can edit any field below.';
     } catch (err) {
-      generateError = err.message || 'Generation failed.';
+      generateError = err.message || 'Generation failed. Please try again.';
     } finally {
       loading = false;
     }
   }
 
-  function onEditorInput() {
-    if (editorRef) editorContent = editorRef.innerHTML;
-  }
-
-  async function copyMemo() {
-    try {
-      await navigator.clipboard.writeText(editorRef ? editorRef.textContent : editorContent);
-      success = 'Copied to clipboard.';
-      setTimeout(() => (success = ''), 2000);
-    } catch {
-      exportError = 'Failed to copy to clipboard.';
+  function handleEditorInput() {
+    if (editorRef) {
+      editorContent = editorRef.innerHTML;
     }
   }
 
-  async function exportDocx() {
-    const html = editorRef ? editorRef.innerHTML : editorContent;
-    if (!html.trim()) {
+  async function handleCopy() {
+    const textToCopy = editorRef ? (editorRef.innerText || editorRef.textContent) : editorContent;
+    if (!textToCopy || !textToCopy.trim()) {
+      exportError = 'No content available to copy.';
+      return;
+    }
+
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(textToCopy);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = textToCopy;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      copyFeedback = 'Copied to clipboard!';
+      setTimeout(() => { copyFeedback = ''; }, 2500);
+    } catch {
+      exportError = 'Unable to copy to clipboard.';
+    }
+  }
+
+  async function handleDownloadDocx() {
+    const currentHtml = editorRef ? editorRef.innerHTML : editorContent;
+    if (!currentHtml || !currentHtml.trim()) {
       exportError = 'No memo content to export.';
       return;
     }
+
     exportError = '';
     try {
       const res = await fetch('/api/export/word', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ html }),
+        body: JSON.stringify({ html: currentHtml }),
       });
-      if (!res.ok) throw new Error('Word export failed.');
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Word export failed.');
+      }
+
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'payment_approval_memo.docx';
+      a.download = `payment_approval_memo_${new Date().toISOString().slice(0, 10)}.docx`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      success = 'Word document downloaded.';
-      setTimeout(() => (success = ''), 2000);
-    } catch {
-      exportError = 'Failed to generate Word document.';
+    } catch (err) {
+      exportError = err.message || 'Failed to download Word document.';
     }
   }
 
-  async function exportPdf() {
-    const html = editorRef ? editorRef.innerHTML : editorContent;
-    if (!html.trim()) {
+  async function handleDownloadPdf() {
+    const currentHtml = editorRef ? editorRef.innerHTML : editorContent;
+    if (!currentHtml || !currentHtml.trim()) {
       exportError = 'No memo content to export.';
       return;
     }
+
     exportError = '';
     try {
       const res = await fetch('/api/export/pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ html }),
+        body: JSON.stringify({ html: currentHtml }),
       });
-      if (!res.ok) throw new Error('PDF export failed.');
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'PDF export failed.');
+      }
+
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'payment_approval_memo.pdf';
+      a.download = `payment_approval_memo_${new Date().toISOString().slice(0, 10)}.pdf`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      success = 'PDF downloaded.';
-      setTimeout(() => (success = ''), 2000);
-    } catch {
-      exportError = 'Failed to generate PDF.';
+    } catch (err) {
+      exportError = err.message || 'Failed to download PDF.';
     }
   }
 </script>
 
 <svelte:head>
-  <title>Generate Memo - Invoice to Memo</title>
+  <title>Payment Approval Memo Generator</title>
 </svelte:head>
 
-<div class="min-h-screen bg-slate-50">
-  <!-- Top bar -->
-  <div class="bg-white border-b border-slate-200">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div class="flex items-center justify-between h-16">
-        <div class="flex items-center gap-2">
-          <span class="bg-indigo-600 text-white px-2 py-1 rounded text-xs font-semibold">INVOICE TO MEMO</span>
-          <span class="text-sm font-medium text-slate-700">Payment Approval Memo Generator</span>
+<div class="workspace">
+  <!-- Top Navigation Header -->
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="header-branding">
+        <div class="header-icon-box">
+          <svg class="header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="16" y1="13" x2="8" y2="13"></line>
+            <line x1="16" y1="17" x2="8" y2="17"></line>
+            <polyline points="10 9 9 9 8 9"></polyline>
+          </svg>
         </div>
-        <button
-          onclick={() => fetch('/api/auth/logout', { method: 'POST' }).then(() => goto('/login'))}
-          class="px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 rounded-lg transition"
-        >
-          Logout
-        </button>
+        <div>
+          <span class="app-title">Invoice to Memo</span>
+          <span class="app-subtitle">Corporate Payment Approval System</span>
+        </div>
       </div>
-    </div>
-  </div>
 
-  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-    <!-- Feedback -->
+      <button
+        type="button"
+        class="logout-button"
+        on:click={handleLogout}
+        title="Sign out of workspace"
+      >
+        <svg class="logout-icon" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M3 3a1 1 0 00-1 1v12a1 1 0 102 0V4a1 1 0 00-1-1zm10.293 9.293a1 1 0 001.414 1.414l3-3a1 1 0 000-1.414l-3-3a1 1 0 10-1.414 1.414L14.586 9H7a1 1 0 100 2h7.586l-1.293 1.293z" clip-rule="evenodd" />
+        </svg>
+        <span>Sign Out</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="main-content">
+    <!-- Page Intro -->
+    <div class="page-heading">
+      <h1 class="heading-title">Generate Approval Memo</h1>
+      <p class="heading-desc">
+        Upload a vendor invoice PDF to extract payee, dates, amounts, and generate a standardized payment approval memo.
+      </p>
+    </div>
+
+    <!-- Feedback Notices -->
     {#if generateError}
-      <div class="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm flex items-center gap-2">
-        <span>&#x26A0;</span> {generateError}
+      <div class="banner banner-error" role="alert">
+        <svg class="banner-icon" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+        </svg>
+        <span>{generateError}</span>
       </div>
     {/if}
+
     {#if exportError}
-      <div class="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm flex items-center gap-2">
-        <span>&#x26A0;</span> {exportError}
+      <div class="banner banner-error" role="alert">
+        <svg class="banner-icon" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+        </svg>
+        <span>{exportError}</span>
       </div>
     {/if}
-    {#if success}
-      <div class="mb-4 p-3 rounded-lg bg-green-50 border border-green-200 text-green-700 text-sm flex items-center gap-2">
-        <span>&#x2714;</span> {success}
+
+    {#if successNotice}
+      <div class="banner banner-success" role="status">
+        <svg class="banner-icon" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
+        </svg>
+        <span>{successNotice}</span>
       </div>
     {/if}
 
-    <!-- Upload + Controls -->
-    <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200 mb-6">
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div class="lg:col-span-2 space-y-4">
-          <div class="border-2 border-dashed border-slate-300 rounded-xl p-6 text-center hover:border-indigo-400 transition">
-            <input
-              id="invoice-input"
-              type="file"
-              accept="application/pdf"
-              onchange={handleFileChange}
-              class="block w-full text-slate-700 cursor-pointer"
-            />
-            <p class="mt-2 text-sm text-slate-600">Upload invoice PDF (text-based)</p>
+    <!-- Upload & Workspace Card -->
+    <section class="card upload-section">
+      <!-- Drag and Drop Box -->
+      <div
+        class="dropzone {isDragOver ? 'drag-active' : ''}"
+        on:dragover={handleDragOver}
+        on:dragleave={handleDragLeave}
+        on:drop={handleDrop}
+        role="region"
+        aria-label="PDF upload dropzone"
+      >
+        <input
+          id="invoice-file-input"
+          type="file"
+          accept="application/pdf"
+          class="file-input-hidden"
+          on:change={handleFileInputChange}
+          disabled={loading}
+        />
+        <label for="invoice-file-input" class="dropzone-label">
+          <div class="upload-icon-circle">
+            <svg class="upload-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="17 8 12 3 7 8"></polyline>
+              <line x1="12" y1="3" x2="12" y2="15"></line>
+            </svg>
           </div>
-
-          {#if invoiceName}
-            <div class="flex items-center gap-3 bg-blue-50 border border-blue-200 rounded-lg p-3">
-              <span class="text-blue-700 text-sm font-medium">&#x1F4CE;</span>
-              <div>
-                <div class="text-sm font-medium text-slate-900">{invoiceName}</div>
-                <div class="text-xs text-slate-500">{invoiceSize}</div>
-              </div>
-              <button
-                onclick={removeFile}
-                class="ml-auto text-red-500 hover:text-red-700 text-sm"
-              >
-                Remove
-              </button>
-            </div>
-          {/if}
-
-          <div class="flex items-center gap-3">
-            <button
-              onclick={generateMemo}
-              disabled={loading || !invoiceFile}
-              class="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:text-slate-500 text-white font-medium rounded-lg transition"
-            >
-              {loading ? 'Generating...' : 'Generate Memo'}
-            </button>
-            <button
-              onclick={removeFile}
-              disabled={!invoiceName}
-              class="px-4 py-2.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium rounded-lg transition"
-            >
-              Clear
-            </button>
+          <div class="dropzone-text">
+            <span class="dropzone-action">Click to upload</span>
+            <span class="dropzone-or"> or drag and drop invoice PDF</span>
           </div>
-
-          {#if loading}
-            <div class="flex items-center gap-3 text-sm text-slate-500">
-              <div class="w-4 h-4 border-2 border-slate-300 border-t-indigo-600 rounded-full animate-spin"></div>
-              Extracting invoice text and generating memo&hellip;
-            </div>
-          {/if}
-        </div>
-
-        <div class="lg:col-span-1">
-          <div class="bg-slate-50 p-4 rounded-lg border border-slate-200">
-            <h3 class="text-sm font-semibold text-slate-700 mb-3">Steps</h3>
-            <ol class="text-sm text-slate-600 space-y-2 list-disc list-inside">
-              <li>Upload a text-based invoice PDF.</li>
-              <li>Click <b>Generate Memo</b>.</li>
-              <li>Review and edit the memo.</li>
-              <li>Copy or download as Word/PDF.</li>
-            </ol>
-          </div>
-        </div>
+          <span class="dropzone-hint">Text-based PDF invoices up to 15 MB</span>
+        </label>
       </div>
-    </div>
 
-    <!-- Editor preview -->
-    {#if memoHtml || editorContent}
-      <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-semibold text-slate-900">Memo Preview (Editable)</h2>
-          <div class="flex gap-2">
-            <button
-              onclick={copyMemo}
-              class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg transition"
-            >
-              Copy
-            </button>
-            <button
-              onclick={exportDocx}
-              class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition"
-            >
-              Download Word
-            </button>
-            <button
-              onclick={exportPdf}
-              class="px-4 py-2 bg-slate-600 hover:bg-slate-700 text-white text-sm font-medium rounded-lg transition"
-            >
-              Download PDF
-            </button>
+      <!-- Invoice Status Display -->
+      {#if invoiceName}
+        <div class="invoice-status-bar" id="invoice-status-display">
+          <div class="status-left">
+            <div class="pdf-tag">PDF</div>
+            <div class="file-details">
+              <span class="file-name" title={invoiceName}>{invoiceName}</span>
+              <span class="file-meta">{invoiceSize} &bull; Ready for extraction</span>
+            </div>
           </div>
+          <button
+            type="button"
+            class="remove-file-btn"
+            on:click={startOver}
+            disabled={loading}
+          >
+            Remove
+          </button>
         </div>
-        <div
-          bind:this={editorRef}
-          contenteditable="true"
-          oninput={onEditorInput}
-          class="prose prose-sm max-w-none min-h-[400px] border border-slate-300 rounded-lg p-6 bg-white text-slate-900 outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+      {/if}
+
+      <!-- Action Buttons -->
+      <div class="action-bar">
+        <button
+          type="button"
+          class="btn btn-primary"
+          id="generate-memo-button"
+          on:click={generateMemo}
+          disabled={loading || !invoiceFile}
         >
-          {@html editorContent}
-        </div>
-        <p class="mt-2 text-xs text-slate-500">Edit the memo directly above. Changes are reflected in exports.</p>
+          {#if loading}
+            <span class="spinner" aria-hidden="true"></span>
+            <span>Processing Invoice with Gemini...</span>
+          {:else}
+            <svg class="btn-icon" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd" />
+            </svg>
+            <span>Generate Memo</span>
+          {/if}
+        </button>
+
+        {#if invoiceFile || memoHtml}
+          <button
+            type="button"
+            class="btn btn-secondary"
+            id="start-over-button"
+            on:click={startOver}
+            disabled={loading}
+          >
+            Start Over
+          </button>
+        {/if}
       </div>
+    </section>
+
+    <!-- Memo Editor & Preview Section -->
+    {#if memoHtml || editorContent}
+      <section class="card editor-section" id="memo-editor-section">
+        <div class="editor-header">
+          <div>
+            <h2 class="editor-title">Approval Memo Preview</h2>
+            <p class="editor-subtitle">Review and edit fields directly before exporting. Highlights mark review items.</p>
+          </div>
+
+          <!-- Document Controls -->
+          <div class="editor-actions">
+            {#if copyFeedback}
+              <span class="copy-feedback-toast">{copyFeedback}</span>
+            {/if}
+            <button
+              type="button"
+              class="btn btn-outline"
+              id="copy-memo-button"
+              on:click={handleCopy}
+              title="Copy memo text to clipboard"
+            >
+              <svg class="btn-icon" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+                <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 2H9a3 3 0 01-3-2z" />
+              </svg>
+              <span>Copy</span>
+            </button>
+
+            <button
+              type="button"
+              class="btn btn-outline"
+              id="download-word-button"
+              on:click={handleDownloadDocx}
+              title="Download Word (.docx) document"
+            >
+              <svg class="btn-icon" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" />
+              </svg>
+              <span>Download Word</span>
+            </button>
+
+            <button
+              type="button"
+              class="btn btn-outline btn-accent"
+              id="download-pdf-button"
+              on:click={handleDownloadPdf}
+              title="Download PDF document"
+            >
+              <svg class="btn-icon" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M6 2a2 2 0 00-2 2v12a2 2 0 002 2h8a2 2 0 002-2V7.414A2 2 0 0015.414 6L12 2.586A2 2 0 0010.586 2H6zm5 2l4 4h-4V4z" clip-rule="evenodd" />
+              </svg>
+              <span>Download PDF</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Editable Paper Document -->
+        <div class="editor-scroll-container">
+          <div
+            bind:this={editorRef}
+            contenteditable="true"
+            on:input={handleEditorInput}
+            class="memo-paper-editor"
+            id="memo-content-editable"
+            role="textbox"
+            aria-multiline="true"
+            aria-label="Editable payment approval memo"
+          >
+            {@html editorContent}
+          </div>
+        </div>
+      </section>
     {/if}
-  </div>
+  </main>
 </div>
 
 <style>
-  :global(body) {
+  .workspace {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background-color: var(--bg-page);
+  }
+
+  /* Header */
+  .app-header {
+    background-color: var(--bg-surface);
+    border-bottom: 1px solid var(--border-color);
+    position: sticky;
+    top: 0;
+    z-index: 20;
+  }
+
+  .header-inner {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 0 20px;
+    height: 60px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .header-branding {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .header-icon-box {
+    width: 32px;
+    height: 32px;
+    background-color: #eff6ff;
+    border: 1px solid #dbeafe;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--primary);
+  }
+
+  .header-icon {
+    width: 18px;
+    height: 18px;
+  }
+
+  .app-title {
+    display: block;
+    font-size: 0.9375rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    line-height: 1.2;
+  }
+
+  .app-subtitle {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    line-height: 1.2;
+  }
+
+  .logout-button {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .logout-button:hover {
+    background-color: var(--bg-subtle);
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+  }
+
+  .logout-icon {
+    width: 15px;
+    height: 15px;
+  }
+
+  /* Main Container */
+  .main-content {
+    max-width: 1080px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 32px 20px 60px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+
+  .page-heading {
+    margin-bottom: 4px;
+  }
+
+  .heading-title {
     margin: 0;
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: -0.02em;
   }
-  .animate-spin {
-    animation: spin 1s linear infinite;
+
+  .heading-desc {
+    margin: 6px 0 0;
+    font-size: 0.9375rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
   }
+
+  /* Alerts */
+  .banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 16px;
+    border-radius: var(--radius-md);
+    font-size: 0.875rem;
+    line-height: 1.45;
+  }
+
+  .banner-icon {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+
+  .banner-error {
+    background-color: var(--danger-bg);
+    border: 1px solid var(--danger-border);
+    color: var(--danger);
+  }
+
+  .banner-success {
+    background-color: var(--success-bg);
+    border: 1px solid var(--success-border);
+    color: var(--success);
+  }
+
+  /* Cards */
+  .card {
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 24px;
+  }
+
+  /* Dropzone */
+  .dropzone {
+    border: 2px dashed var(--border-strong);
+    border-radius: var(--radius-md);
+    background-color: #fbfcfe;
+    transition: all 0.2s ease;
+    cursor: pointer;
+  }
+
+  .dropzone:hover,
+  .dropzone.drag-active {
+    border-color: var(--primary);
+    background-color: #f0f7ff;
+  }
+
+  .file-input-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
+  }
+
+  .dropzone-label {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 36px 20px;
+    cursor: pointer;
+    text-align: center;
+  }
+
+  .upload-icon-circle {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background-color: #eff6ff;
+    color: var(--primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 12px;
+  }
+
+  .upload-svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  .dropzone-text {
+    font-size: 0.9375rem;
+    margin-bottom: 4px;
+  }
+
+  .dropzone-action {
+    color: var(--primary);
+    font-weight: 600;
+  }
+
+  .dropzone-or {
+    color: var(--text-secondary);
+  }
+
+  .dropzone-hint {
+    font-size: 0.8125rem;
+    color: var(--text-tertiary);
+  }
+
+  /* Invoice Status Display */
+  .invoice-status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 16px;
+    padding: 12px 16px;
+    background-color: var(--bg-subtle);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+  }
+
+  .status-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .pdf-tag {
+    background-color: #dc2626;
+    color: #ffffff;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    padding: 3px 6px;
+    border-radius: 4px;
+    letter-spacing: 0.04em;
+  }
+
+  .file-details {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .file-name {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .file-meta {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+  }
+
+  .remove-file-btn {
+    background: transparent;
+    border: none;
+    color: var(--danger);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+  }
+
+  .remove-file-btn:hover {
+    background-color: var(--danger-bg);
+  }
+
+  /* Action Bar */
+  .action-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 20px;
+    flex-wrap: wrap;
+  }
+
+  /* Buttons */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 9px 18px;
+    font-size: 0.875rem;
+    font-weight: 600;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    border: 1px solid transparent;
+    line-height: 1.25;
+  }
+
+  .btn-icon {
+    width: 16px;
+    height: 16px;
+  }
+
+  .btn-primary {
+    background-color: var(--primary);
+    color: #ffffff;
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    background-color: var(--primary-hover);
+  }
+
+  .btn-primary:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--primary-focus);
+  }
+
+  .btn-primary:disabled {
+    background-color: #93c5fd;
+    cursor: not-allowed;
+  }
+
+  .btn-secondary {
+    background-color: var(--bg-surface);
+    border-color: var(--border-strong);
+    color: var(--text-secondary);
+  }
+
+  .btn-secondary:hover:not(:disabled) {
+    background-color: var(--bg-subtle);
+    color: var(--text-primary);
+  }
+
+  .btn-outline {
+    background-color: var(--bg-surface);
+    border-color: var(--border-color);
+    color: var(--text-secondary);
+    padding: 8px 14px;
+    font-size: 0.8125rem;
+  }
+
+  .btn-outline:hover:not(:disabled) {
+    background-color: var(--bg-subtle);
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+  }
+
+  .btn-accent {
+    color: var(--primary);
+    border-color: #bfdbfe;
+    background-color: #eff6ff;
+  }
+
+  .btn-accent:hover:not(:disabled) {
+    background-color: #dbeafe;
+    color: var(--primary-hover);
+    border-color: #93c5fd;
+  }
+
+  .spinner {
+    width: 15px;
+    height: 15px;
+    border: 2px solid rgba(255, 255, 255, 0.4);
+    border-top-color: #ffffff;
+    border-radius: 50%;
+    animation: spin 0.75s linear infinite;
+  }
+
   @keyframes spin {
-    from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
   }
-  .prose p { margin: 0 0 1em; }
-  .prose h1 { font-size: 1.125em; font-weight: 700; text-decoration: underline; border-top: 1px solid #333; border-bottom: 1px solid #333; padding: 10px 0; margin: 0 0 1em; }
-  .prose table { width: 100%; border-collapse: collapse; margin: 0 0 1em; }
-  .prose th, .prose td { border: 1px solid #333; padding: 8px 10px; text-align: center; }
+
+  /* Editor Section */
+  .editor-section {
+    padding: 24px;
+    overflow: hidden;
+  }
+
+  .editor-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border-color);
+    flex-wrap: wrap;
+  }
+
+  .editor-title {
+    margin: 0;
+    font-size: 1.125rem;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+
+  .editor-subtitle {
+    margin: 4px 0 0;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+  }
+
+  .editor-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    position: relative;
+  }
+
+  .copy-feedback-toast {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--success);
+    background-color: var(--success-bg);
+    border: 1px solid var(--success-border);
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+  }
+
+  .editor-scroll-container {
+    overflow-x: auto;
+    background-color: #e5e7eb;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 32px 16px;
+  }
+
+  /* Paper Preview Container */
+  .memo-paper-editor {
+    max-width: 820px;
+    margin: 0 auto;
+    background-color: #ffffff;
+    padding: 48px 56px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+    font-family: Calibri, 'Segoe UI', Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+    color: #1b1b1b;
+    outline: none;
+    min-height: 480px;
+    border-radius: 2px;
+  }
+
+  .memo-paper-editor:focus {
+    box-shadow: 0 0 0 2px var(--primary), 0 4px 12px rgba(0, 0, 0, 0.08);
+  }
+
+  /* Template Content inside Editor */
+  :global(.memo-paper-editor p) {
+    margin: 0 0 20px;
+  }
+
+  :global(.memo-paper-editor .date) {
+    font-weight: 700;
+    margin: 0 0 24px;
+  }
+
+  :global(.memo-paper-editor .subject) {
+    font-size: 0.95rem;
+    font-weight: 700;
+    text-decoration: underline;
+    border-top: 1px solid #333333;
+    border-bottom: 1px solid #333333;
+    padding: 10px 0;
+    margin: 0 0 28px;
+  }
+
+  :global(.memo-paper-editor .ph) {
+    background-color: #fff3c4;
+    padding: 1px 4px;
+    border-radius: 2px;
+  }
+
+  :global(.memo-paper-editor .table-wrap) {
+    overflow-x: auto;
+    margin-bottom: 24px;
+  }
+
+  :global(.memo-paper-editor table) {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 520px;
+    margin-bottom: 20px;
+  }
+
+  :global(.memo-paper-editor th),
+  :global(.memo-paper-editor td) {
+    border: 1px solid #333333;
+    padding: 8px 10px;
+    text-align: center;
+    vertical-align: middle;
+  }
+
+  :global(.memo-paper-editor th) {
+    font-weight: 600;
+  }
+
+  :global(.memo-paper-editor td.num) {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  :global(.memo-paper-editor tr.total td) {
+    border-top: 2px solid #333333;
+  }
+
+  :global(.memo-paper-editor tr.total td:first-child) {
+    text-align: left;
+    font-weight: 700;
+  }
+
+  :global(.memo-paper-editor .sign) {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 64px;
+    gap: 24px;
+  }
+
+  :global(.memo-paper-editor .sign div) {
+    min-width: 180px;
+    padding-top: 8px;
+    border-top: 1px solid #333333;
+    font-weight: 600;
+  }
+
+  :global(.memo-paper-editor .note) {
+    margin-top: 36px;
+    font-size: 0.8125rem;
+    color: #666666;
+    border-top: 1px dashed #cccccc;
+    padding-top: 10px;
+  }
+
+  @media (max-width: 640px) {
+    .main-content {
+      padding: 20px 12px 40px;
+    }
+
+    .memo-paper-editor {
+      padding: 24px 18px;
+      font-size: 14px;
+    }
+
+    .editor-header {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .editor-actions {
+      justify-content: flex-start;
+    }
+
+    .btn {
+      width: 100%;
+    }
+
+    .action-bar {
+      flex-direction: column;
+    }
+
+    .action-bar .btn {
+      width: 100%;
+    }
+  }
 </style>

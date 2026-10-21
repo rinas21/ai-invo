@@ -12,6 +12,57 @@ function tagNameOf(html, pos) {
   return m ? m[1].toLowerCase() : null;
 }
 
+function parseInline(text) {
+  const runs = [];
+  let j = 0;
+  const len = text.length;
+  while (j < len) {
+    const open = text.indexOf('<', j);
+    if (open === -1) {
+      const chunk = text.slice(j);
+      if (chunk) runs.push({ text: chunk, bold: false, italic: false });
+      break;
+    }
+    if (open > j) {
+      runs.push({ text: text.slice(j, open), bold: false, italic: false });
+    }
+    const close = text.indexOf('>', open);
+    if (close === -1) {
+      runs.push({ text: text.slice(open), bold: false, italic: false });
+      break;
+    }
+    const tagBody = text.slice(open + 1, close).trim();
+    const isClose = tagBody.startsWith('/');
+    const name = tagBody.replace(/^\//, '').split(/\s/)[0].toLowerCase();
+    if (isClose) {
+      j = close + 1;
+      continue;
+    }
+    const attrs = tagBody.slice(name.length).trim();
+    const selfClosing = attrs.endsWith('/');
+    const bold = name === 'strong' || name === 'b';
+    const italic = name === 'em' || name === 'i';
+    const br = name === 'br';
+    if (br || selfClosing) {
+      runs.push({ text: br ? '\n' : '', bold, italic });
+      j = close + 1;
+      continue;
+    }
+    const closeTag = `</${name}>`;
+    const cIdx = text.indexOf(closeTag, close + 1);
+    if (cIdx === -1) {
+      runs.push({ text: text.slice(close + 1), bold, italic });
+      j = len;
+      break;
+    }
+    const inner = text.slice(close + 1, cIdx);
+    const innerRuns = parseInline(inner).map((r) => ({ ...r, bold: r.bold || bold, italic: r.italic || italic }));
+    runs.push(...innerRuns);
+    j = cIdx + closeTag.length;
+  }
+  return runs;
+}
+
 export function parseMemoHtml(html) {
   const blocks = [];
   let i = 0;
@@ -21,64 +72,6 @@ export function parseMemoHtml(html) {
     const idx = html.indexOf(endTag, i);
     if (idx === -1) return { text: html.slice(i), end: n };
     return { text: html.slice(i, idx), end: idx };
-  }
-
-  function parseInline(text) {
-    const runs = [];
-    let j = 0;
-    const len = text.length;
-    while (j < len) {
-      const open = text.indexOf('<', j);
-      if (open === -1) {
-        const chunk = text.slice(j);
-        if (chunk) runs.push({ text: chunk, bold: false, italic: false });
-        break;
-      }
-      if (open > j) {
-        runs.push({ text: text.slice(j, open), bold: false, italic: false });
-      }
-      const close = text.indexOf('>', open);
-      if (close === -1) {
-        runs.push({ text: text.slice(open), bold: false, italic: false });
-        break;
-      }
-      const tagBody = text.slice(open + 1, close).trim();
-      const isClose = tagBody.startsWith('/');
-      const name = tagBody.replace(/^\//, '').split(/\s/)[0].toLowerCase();
-      if (isClose) {
-        if (name === 'strong' || name === 'b') {
-          // close bold handled by tracking below; here we just mark end of current run grouping
-        } else if (name === 'em' || name === 'i') {
-          // close italic
-        }
-        j = close + 1;
-        continue;
-      }
-      const attrs = tagBody.slice(name.length).trim();
-      const selfClosing = attrs.endsWith('/');
-      const bold = name === 'strong' || name === 'b';
-      const italic = name === 'em' || name === 'i';
-      const br = name === 'br';
-      if (br || selfClosing) {
-        runs.push({ text: br ? '\n' : '', bold, italic });
-        j = close + 1;
-        continue;
-      }
-      // Find closing tag
-      const closeTag = `</${name}>`;
-      const cIdx = text.indexOf(closeTag, close + 1);
-      if (cIdx === -1) {
-        runs.push({ text: text.slice(close + 1), bold, italic });
-        j = len;
-        break;
-      }
-      const inner = text.slice(close + 1, cIdx);
-      // recursively parse inner for nested b/i
-      const innerRuns = parseInline(inner).map((r) => ({ ...r, bold: r.bold || bold, italic: r.italic || italic }));
-      runs.push(...innerRuns);
-      j = cIdx + closeTag.length;
-    }
-    return runs;
   }
 
   while (i < n) {

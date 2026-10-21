@@ -1,12 +1,21 @@
 import crypto from 'crypto';
+import { env } from '$env/dynamic/private';
 
-const SESSION_SECRET = process.env.APP_PASSWORD || 'dev-insecure-change-me';
-const SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 8; // 8 hours
+export function getAppPassword() {
+  return env.APP_PASSWORD || process.env.APP_PASSWORD || '';
+}
 
-// In-memory session store (single-instance demo; fine for Vercel serverless).
-const sessions = new Map();
+function getSessionSecret() {
+  const pwd = getAppPassword();
+  return pwd || 'invomemo-default-session-secret-key-32b';
+}
 
-// In-memory login rate limiter (fixed window per IP).
+export const SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 8; // 8 hours
+
+// Revoked session IDs (for explicit logout)
+const revokedSessions = new Set();
+
+// In-memory login rate limiter (fixed window per IP)
 const loginAttempts = new Map();
 const LOGIN_WINDOW_MS = 1000 * 60 * 15; // 15 minutes
 const LOGIN_MAX_ATTEMPTS = 10;
@@ -15,33 +24,55 @@ function makeSessionId() {
   return crypto.randomBytes(24).toString('hex');
 }
 
-function signSession(sessionId) {
-  return crypto.createHmac('sha256', SESSION_SECRET).update(sessionId).digest('hex');
+function signPayload(payload) {
+  return crypto.createHmac('sha256', getSessionSecret()).update(payload).digest('hex');
 }
 
-function createSession() {
+export function createSession() {
   const id = makeSessionId();
-  const sig = signSession(id);
-  sessions.set(id, { createdAt: Date.now() });
-  return `${id}.${sig}`;
+  const timestamp = Date.now().toString();
+  const payload = `${id}.${timestamp}`;
+  const sig = signPayload(payload);
+  return `${payload}.${sig}`;
 }
 
-function validateSession(token) {
+export function validateSession(token) {
   if (!token || typeof token !== 'string') return null;
-  const dot = token.lastIndexOf('.');
-  if (dot <= 0) return null;
-  const id = token.slice(0, dot);
-  const sig = token.slice(dot + 1);
-  const expected = signSession(id);
-  if (sig !== expected || !sessions.has(id)) return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [id, timestampStr, sig] = parts;
+  const timestamp = Number(timestampStr);
+  if (!timestamp || isNaN(timestamp)) return null;
+
+  // Check expiration
+  if (Date.now() - timestamp > SESSION_MAX_AGE_MS) return null;
+
+  // Check revocation
+  if (revokedSessions.has(id)) return null;
+
+  // Validate HMAC signature using timing safe compare
+  const payload = `${id}.${timestampStr}`;
+  const expected = signPayload(payload);
+  const sigBuf = Buffer.from(sig);
+  const expBuf = Buffer.from(expected);
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+    return null;
+  }
+
   return id;
 }
 
-function destroySession(id) {
-  sessions.delete(id);
+export function destroySession(tokenOrId) {
+  if (!tokenOrId) return;
+  if (tokenOrId.includes('.')) {
+    const id = tokenOrId.split('.')[0];
+    revokedSessions.add(id);
+  } else {
+    revokedSessions.add(tokenOrId);
+  }
 }
 
-function isRateLimited(ip) {
+export function isRateLimited(ip) {
   const now = Date.now();
   const record = loginAttempts.get(ip);
   if (!record) return false;
@@ -52,7 +83,7 @@ function isRateLimited(ip) {
   return record.count >= LOGIN_MAX_ATTEMPTS;
 }
 
-function registerLoginAttempt(ip, success) {
+export function registerLoginAttempt(ip, success) {
   const now = Date.now();
   let record = loginAttempts.get(ip);
   if (!record || now > record.resetAt) {
@@ -66,20 +97,8 @@ function registerLoginAttempt(ip, success) {
   }
 }
 
-function getClientIp(event) {
+export function getClientIp(event) {
   const forwarded = event.request.headers.get('x-forwarded-for');
   if (forwarded) return forwarded.split(',')[0].trim();
   return event.getClientAddress ? event.getClientAddress() : 'unknown';
 }
-
-export {
-  sessions,
-  createSession,
-  validateSession,
-  destroySession,
-  SESSION_MAX_AGE_MS,
-  SESSION_SECRET,
-  isRateLimited,
-  registerLoginAttempt,
-  getClientIp,
-};

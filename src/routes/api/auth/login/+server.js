@@ -1,6 +1,7 @@
-import { json, error } from '@sveltejs/kit';
-import { APP_PASSWORD } from '$env/static/private';
+import { json } from '@sveltejs/kit';
+import crypto from 'crypto';
 import {
+  getAppPassword,
   createSession,
   isRateLimited,
   registerLoginAttempt,
@@ -16,51 +17,53 @@ function setSessionCookie(cookies, token) {
     sameSite: 'lax',
     path: '/',
     secure: process.env.NODE_ENV === 'production',
-    maxAge: SESSION_MAX_AGE_MS / 1000,
+    maxAge: Math.floor(SESSION_MAX_AGE_MS / 1000),
   });
 }
 
 export async function POST({ request, cookies }) {
-  const ip = getClientIp({ request, getClientAddress: () => request.headers.get('x-forwarded-for') });
+  const ip = getClientIp({
+    request,
+    getClientAddress: () => request.headers.get('x-forwarded-for') || '127.0.0.1',
+  });
 
   if (isRateLimited(ip)) {
-    return json({ error: 'Too many login attempts. Try again later.' }, { status: 429 });
+    return json({ error: 'Too many login attempts. Please try again in 15 minutes.' }, { status: 429 });
+  }
+
+  const appPassword = getAppPassword();
+  if (!appPassword) {
+    return json(
+      { error: 'Server authentication is not configured. The APP_PASSWORD environment variable is missing.' },
+      { status: 500 }
+    );
   }
 
   let body;
   try {
     body = await request.json();
   } catch {
-    return json({ error: 'Invalid request.' }, { status: 400 });
+    return json({ error: 'Invalid request payload.' }, { status: 400 });
   }
 
   const { password } = body || {};
-  if (typeof password !== 'string') {
+  if (typeof password !== 'string' || !password.trim()) {
     registerLoginAttempt(ip, false);
-    return json({ error: 'Invalid credentials.' }, { status: 400 });
+    return json({ error: 'Please enter a password.' }, { status: 400 });
   }
 
-  if (!APP_PASSWORD) {
-    return json({ error: 'Server is not configured.' }, { status: 500 });
-  }
+  const userBuf = Buffer.from(password, 'utf8');
+  const appBuf = Buffer.from(appPassword, 'utf8');
+  const isMatch = userBuf.length === appBuf.length && crypto.timingSafeEqual(userBuf, appBuf);
 
-  const a = Buffer.from(password, 'utf8');
-  const b = Buffer.from(APP_PASSWORD, 'utf8');
-  let match = a.length === b.length;
-  if (match) {
-    for (let i = 0; i < a.length; i++) {
-      if (a[i] !== b[i]) match = false;
-    }
-  }
-
-  if (!match) {
+  if (!isMatch) {
     registerLoginAttempt(ip, false);
-    return json({ error: 'Invalid credentials.' }, { status: 401 });
+    return json({ error: 'Incorrect password. Please try again.' }, { status: 401 });
   }
 
   registerLoginAttempt(ip, true);
   const token = createSession();
   setSessionCookie(cookies, token);
 
-  return json({ ok: true });
+  return json({ ok: true, message: 'Logged in successfully.' });
 }

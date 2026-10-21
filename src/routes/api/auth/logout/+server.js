@@ -9,6 +9,6 @@ export async function POST({ cookies }) {
     const id = validateSession(token);
     if (id) destroySession(id);
   }
-  cookies.set(COOKIE_NAME, '', { path: '/', httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: 0 });
-  return json({ ok: true });
+  cookies.delete(COOKIE_NAME, { path: '/' });
+  return json({ ok: true, message: 'Logged out successfully.' });
 }

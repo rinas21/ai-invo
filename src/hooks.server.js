@@ -19,6 +19,7 @@ function handleAuth({ event, resolve }) {
   event.locals.sessionId = sessionId || null;
   event.locals.authenticated = !!sessionId;
 
+  // Protect sensitive routes
   if (isProtected(pathname) && !sessionId) {
     if (pathname.startsWith('/api')) {
       return new Response(JSON.stringify({ error: 'Authentication required.' }), {
@@ -26,11 +27,17 @@ function handleAuth({ event, resolve }) {
         headers: { 'content-type': 'application/json' },
       });
     }
-    return new Response(null, { status: 302, headers: { location: '/login' } });
+    return new Response(null, { status: 302, headers: { location: '/' } });
   }
 
-  if (pathname === '/login' && sessionId) {
+  // Redirect authenticated user from root login page to /generate
+  if ((pathname === '/' || pathname === '/login') && sessionId) {
     return new Response(null, { status: 302, headers: { location: '/generate' } });
+  }
+
+  // If user requests legacy /login, redirect to /
+  if (pathname === '/login') {
+    return new Response(null, { status: 302, headers: { location: '/' } });
   }
 
   return resolve(event);
@@ -39,7 +46,7 @@ function handleAuth({ event, resolve }) {
 export const handle = handleAuth;
 
 export const handleError = ({ error }) => {
-  console.error('Unhandled error:', error);
+  console.error('Unhandled server error:', error);
   return {
     message: 'An unexpected error occurred. Please try again.',
   };
